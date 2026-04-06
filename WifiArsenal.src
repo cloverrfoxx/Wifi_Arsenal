@@ -1,0 +1,495 @@
+// WifiArsenal Toolkit
+// Use this toolkit to use wifi networks as consumable resources you can burn if you suspect you IP leaked.
+// Will scan networks from fastest to slowest to fill up the database as quick as possible
+
+
+WifiArsenal = {}
+
+// ==========================================
+// USER CONFIGURATION
+// ==========================================
+// Modify this path if you want to store your Wi-Fi DB elsewhere
+WifiArsenal.STORAGE_PATH = home_dir + "/.wifinetworks.txt"
+
+
+// ==========================================
+// CORE INITIALIZATION
+// ==========================================
+WifiArsenal.init = function()
+    // --- Internal State Setup ---
+    self.crypto = include_lib("/lib/crypto.so")
+    if not self.crypto then exit("Error: Missing crypto library.")
+
+    self.hostComp = get_shell.host_computer
+    netCards = self.hostComp.network_devices.split(char(10))
+    if not netCards or netCards.len == 0 then exit("Error: Found no NIC.")
+    
+    self.nicDevice = netCards[0].split(" ")[0]
+    if not self.nicDevice then exit("Error: Found no interface name.")
+    
+    // --- Command Lookup Table ---
+    self.menuMap = {
+        "1": {"call": "opt_scan", "title": "Start Background Scan", "hue": "#42DB91", "info": "Spawns detached terminal"},
+        "2": {"call": "opt_burn", "title": "Burn & Hop", "hue": "#FF0000", "info": "Burn a network and jump to a clean one"},
+        "3": {"call": "opt_list", "title": "List Arsenal", "hue": "orange", "info": "View database"},
+        "4": {"call": "opt_rotate", "title": "Auto-Rotate", "hue": "#aaaaaa", "info": "Start timed hops between networks"},
+        "5": {"call": "opt_exit", "title": "Exit", "hue": "white", "info": "Close toolkit"},
+    }
+end function
+
+// ==========================================
+// UI & DASHBOARD
+// ==========================================
+WifiArsenal.drawDashboard = function()
+    liveDb = self.pullDatabase()
+    usableNets = self.filterUsable(liveDb)
+    
+    clear_screen
+    
+    // --- ULTRA-COMPACT HEADER ---
+    print("<align=center><size=150%><b><color=#FF5E00>WIFI</color> <color=#00FFFF>ARSENAL</color></b></size></align>")
+    print("<align=center><color=#aaaaaa>v1.1</color></align>")
+    
+    print("Available Networks: <color=#1EFF00>" + usableNets.len + "</color>")
+    print("Burned Networks:    <color=#FF0000>" + (liveDb.len - usableNets.len) + "</color>")
+    
+    print("<b><color=#00FFFF>Options:</color></b>")
+    
+    // Sort keys just in case, to maintain 1-5 order
+    keyMap = self.menuMap.indexes
+    keyMap.sort()
+    for key in keyMap
+        cmd = self.menuMap[key]
+        print("  [" + key + "] <color=" + cmd.hue + ">" + cmd.title + "</color> <color=#888888>(" + cmd.info + ")</color>")
+    end for
+    
+    print("<color=#aaaaaa>[Press Enter to refresh network stats]</color>")
+end function
+
+WifiArsenal.interactiveLoop = function()
+    while true
+        self.drawDashboard()
+        choice = user_input("\n<color=#FF5E00>Action > </color>").trim
+        
+        // Graceful refresh on Enter
+        if choice == "" then continue
+        
+        if self.menuMap.hasIndex(choice) then
+            targetMethod = self.menuMap[choice].call
+            self[targetMethod]()
+        else
+            print("<color=red>Invalid selection.</color>")
+            wait(1)
+        end if
+    end while
+end function
+
+// ==========================================
+// INTERACTIVE COMMANDS
+// ==========================================
+WifiArsenal.opt_scan = function()
+    print("<color=#aaaaaa>Spawning scanner in new terminal...</color>")
+    get_shell.launch("/usr/bin/Terminal.exe", program_path + " -scan")
+    print("<color=#FBFF04>Minimize the new terminal, it will find and crack all networks passively")
+    wait(1)
+end function
+
+WifiArsenal.opt_burn = function()
+    liveDb = self.pullDatabase()
+    usableNets = self.filterUsable(liveDb)
+    
+    if usableNets.len <= 1 then
+        user_input("\n<color=red>FAILSAFE: You only have " + usableNets.len + " clean networks left. Scan for more before burning to avoid a lockout. [Press Enter]</color>")
+        return
+    end if
+    
+    // Auto-detect the current Wi-Fi network using its MAC address
+    activeRouter = get_router()
+    currentBSSID = null
+    if activeRouter then currentBSSID = activeRouter.bssid_name
+    
+    currentBurnIdx = -1
+    
+    print("\n<b><color=#FF5E00>Select Network to BURN:</color></b>")
+    for idx in range(0, usableNets.len - 1)
+        marker = ""
+        if usableNets[idx].mac == currentBSSID then
+            marker = " <color=#1EFF00><-- [CURRENT]</color>"
+            currentBurnIdx = idx
+        end if
+        print("  [" + idx + "] " + usableNets[idx].id + " (" + usableNets[idx].signal + "%)" + marker)
+    end for
+    
+    // EDGE CASE: Connected to a network not yet in the Arsenal database
+    if activeRouter and currentBSSID and currentBurnIdx == -1 then
+        print("  <color=orange>[!] CURRENT network (" + currentBSSID + ") is NOT in your Arsenal.</color>")
+    end if
+    
+    print("  <color=#aaaaaa>[ Type 'c' to cancel and return to menu ]</color>")
+    
+    // Dynamically adjust the prompt based on what we detected
+    promptText = "\nBurn which ID?"
+    if currentBurnIdx != -1 then
+        promptText = promptText + " <color=orange>(Enter to AUTOBURN CURRENT)</color>"
+    else if activeRouter and currentBSSID then
+        promptText = promptText + " <color=orange>(Press Enter to instantly HOP from CURRENT)</color>"
+    end if
+    
+    targetStr = user_input(promptText + " > ").trim.lower
+    
+    // Safe abort check
+    if targetStr == "c" or targetStr == "cancel" or targetStr == "q" or targetStr == "quit" then
+        return
+    end if
+    
+    burnIdx = -1
+    unlistedHop = false
+    
+    if targetStr == "" then
+        if currentBurnIdx != -1 then
+            burnIdx = currentBurnIdx
+        else if activeRouter and currentBSSID then
+            unlistedHop = true // Trigger the emergency unlisted hop
+        else
+            return // User pressed enter with no input and no default active network
+        end if
+    else
+        burnIdx = targetStr.to_int
+    end if
+    
+    // Execute Emergency Hop for unlisted networks
+    if unlistedHop then
+        print("<color=orange>Executing emergency hop to a clean network...</color>")
+        
+        // Pick a reliable escape node from the top of the usable list
+        escapeNode = usableNets[0] 
+        
+        connRes = self.hostComp.connect_wifi(self.nicDevice, escapeNode.mac, escapeNode.id, escapeNode.pass)
+        if connRes == 1 then
+            print("<color=#1EFF00>Hop successful. You are clear.</color>")
+        else
+            print("<color=red>Hop failed! Manual intervention required.</color>")
+        end if
+        user_input("\n[Press Enter to return to menu]")
+        return
+    end if
+    
+    // Standard Burn & Hop for listed networks
+    if typeof(burnIdx) == "number" and burnIdx >= 0 and burnIdx < usableNets.len then
+        doomedNet = usableNets[burnIdx]
+        
+        liveDb[doomedNet.id].flag = "burned"
+        self.pushDatabase(liveDb)
+        print("<color=#FF0000>Network " + doomedNet.id + " has been flagged as BURNED.</color>")
+        
+        // Find a new target to hop to
+        escapeNode = null
+        for node in usableNets
+            if node.id != doomedNet.id then
+                escapeNode = node
+                break
+            end if
+        end for
+        
+        if escapeNode != null then
+            print("<color=orange>Executing emergency hop to " + escapeNode.id + "...</color>")
+            connRes = self.hostComp.connect_wifi(self.nicDevice, escapeNode.mac, escapeNode.id, escapeNode.pass)
+            if connRes == 1 then
+                print("<color=#1EFF00>Hop successful. You are clear.</color>")
+            else
+                print("<color=red>Hop failed! Manual intervention required.</color>")
+            end if
+        end if
+    else
+        print("<color=red>Invalid ID.</color>")
+    end if
+    
+    user_input("\n[Press Enter to return to menu]")
+end function
+
+WifiArsenal.opt_list = function()
+    while true
+        liveDb = self.pullDatabase()
+        usableNets = self.filterUsable(liveDb)
+        
+        // Gather burned networks into an indexed array
+        burnedNets = []
+        for pair in liveDb
+            if pair.value.flag == "burned" then burnedNets.push(pair.value)
+        end for
+        
+        clear_screen
+        print("\n<b><color=#1EFF00>--- CLEAN WIFI NETS ---</color></b>")
+        if usableNets.len == 0 then 
+            print("  <color=#aaaaaa>[ None ]</color>")
+        else
+            for net in usableNets
+                print("  " + net.id + " (" + net.signal + "%)")
+            end for
+        end if
+        
+        print("\n<b><color=#FF0000>--- BURNED NETWORKS ---</color></b>")
+        if burnedNets.len == 0 then 
+            print("  <color=#aaaaaa>[ None ]</color>")
+        else
+            for idx in range(0, burnedNets.len - 1)
+                print("  [" + idx + "] " + burnedNets[idx].id)
+            end for
+        end if
+        
+        print("\n<b><color=#00FFFF>Options:</color></b>")
+        print("  Type <color=orange>[ID]</color> to revive a specific network")
+        print("  Type <color=orange>all</color> to revive all burned networks")
+        print("  Press <color=orange>[Enter]</color> to return to main menu")
+        
+        subOpt = user_input("\n<color=#FF5E00>List Action > </color>").trim.lower
+        
+        if subOpt == "" then return
+        
+        if subOpt == "all" then
+            if burnedNets.len == 0 then
+                print("<color=orange>No burned networks to revive.</color>")
+                wait(1.5)
+                continue
+            end if
+            
+            print("\n<b><color=#FF0000>!!! OPSEC WARNING !!!</color></b>")
+            print("<color=orange>Burned networks were flagged for a reason. Reconnecting to them</color>")
+            print("<color=orange>probably increases your chances of being traced.</color>")
+            confirm = user_input("Are you sure you want to revive ALL networks? (y/n) > ").trim.lower
+            
+            if confirm == "y" or confirm == "yes" then
+                for bNet in burnedNets
+                    liveDb[bNet.id].flag = "clean"
+                end for
+                self.pushDatabase(liveDb)
+                print("<color=#1EFF00>SUCCESS: All networks revived.</color>")
+                wait(1.5)
+            end if
+            continue
+        end if
+        
+        bIdx = subOpt.to_int
+        if typeof(bIdx) == "number" and bIdx >= 0 and bIdx < burnedNets.len then
+            targetNet = burnedNets[bIdx]
+            
+            print("\n<b><color=#FF0000>!!! OPSEC WARNING !!!</color></b>")
+            print("<color=orange>Reviving this network means you may reconnect to a monitored router.</color>")
+            confirm = user_input("Are you sure you want to revive " + targetNet.id + "? (y/n) > ").trim.lower
+            
+            if confirm == "y" or confirm == "yes" then
+                liveDb[targetNet.id].flag = "clean"
+                self.pushDatabase(liveDb)
+                print("<color=#1EFF00>SUCCESS: Network " + targetNet.id + " revived.</color>")
+                wait(1.5)
+            end if
+        else
+            print("<color=red>Invalid selection.</color>")
+            wait(1)
+        end if
+    end while
+end function
+
+WifiArsenal.opt_rotate = function()
+    print("\n<b><color=#FF0000>!!! OPSEC WARNING !!!</color></b>")
+    print("<color=orange>Auto-rotating networks without burning them means you will eventually loop back to a network you've already visited. This defeats the stealth purpose of this toolkit and increases your risk of being traced.</color>")
+    print("  <color=#aaaaaa>[ Enter 'c' to cancel and return to menu ]</color>")
+    
+    rotMins = user_input("\nMinutes between hops? (default 5) > ").trim.lower
+    
+    // Safe abort check
+    if rotMins == "c" or rotMins == "cancel" or rotMins == "q" or rotMins == "quit" then
+        return
+    end if
+    
+    if rotMins == "" then rotMins = "5"
+    
+    // Validate that they actually entered a number
+    if typeof(rotMins.to_int) != "number" then
+        print("<color=red>Invalid input. Must be a number.</color>")
+        wait(1)
+        return
+    end if
+    
+    print("<color=#aaaaaa>Starting rotation (" + rotMins + " min) in new terminal...</color>")
+    get_shell.launch("/usr/bin/Terminal.exe", program_path + " -rotate " + rotMins)
+    wait(1)
+end function
+
+WifiArsenal.opt_exit = function()
+    clear_screen
+    exit("<color=#aaaaaa>Exiting toolkit...</color>")
+end function
+
+// ==========================================
+// DATABASE I/O
+// ==========================================
+WifiArsenal.pullDatabase = function()
+    payloads = {}
+    fObj = self.hostComp.File(self.STORAGE_PATH)
+    if not fObj then return payloads
+    
+    rawText = fObj.get_content
+    if not rawText then return payloads
+    
+    for row in rawText.split(char(10))
+        if row == "" then continue
+        segments = row.split("\|")
+        
+        if segments.len >= 4 then
+            stateFlag = "clean"
+            if segments.len == 5 then stateFlag = segments[4]
+            payloads[segments[0]] = {"id": segments[0], "mac": segments[1], "pass": segments[2], "signal": segments[3].to_int, "flag": stateFlag}
+        end if
+    end for
+    return payloads
+end function
+
+WifiArsenal.pushDatabase = function(payloadData)
+    linesOut = []
+    for pair in payloadData
+        p = pair.value
+        linesOut.push(p.id + "|" + p.mac + "|" + p.pass + "|" + p.signal + "|" + p.flag)
+    end for
+    
+    fObj = self.hostComp.File(self.STORAGE_PATH)
+    if not fObj then
+        chunks = self.STORAGE_PATH.split("/")
+        fName = chunks.pop
+        folderDir = chunks.join("/")
+        if folderDir == "" then folderDir = "/"
+        self.hostComp.touch(folderDir, fName)
+        fObj = self.hostComp.File(self.STORAGE_PATH)
+    end if
+    
+    if fObj then fObj.set_content(linesOut.join(char(10)))
+end function
+
+WifiArsenal.filterUsable = function(payloadData)
+    usable = []
+    for pair in payloadData
+        if pair.value.flag == "clean" then usable.push(pair.value)
+    end for
+    return usable
+end function
+
+// ==========================================
+// BACKGROUND SHIT
+// ==========================================
+WifiArsenal.runScanner = function(cmdArgs)
+    localDb = self.pullDatabase()
+    self.crypto.airmon("start", self.nicDevice)
+    wait(0.5)
+    
+    visibleNets = self.hostComp.wifi_networks(self.nicDevice)
+    if visibleNets == null then exit("Found no networks in range.")
+    
+    print("<color=#00FFFF>Initiating Wi-Fi Arsenal Builder...</color>")
+    print("<color=#4FFA00>Tip: You can safely minimize this terminal. It will passively update the database in the background.</color>\n")
+    
+    // --- DB SYNC: Purge out-of-range networks ---
+    liveEssids = []
+    for netString in visibleNets
+        liveEssids.push(netString.split(" ")[2])
+    end for
+    
+    staleCount = 0
+    for dbKey in localDb.indexes
+        if liveEssids.indexOf(dbKey) == null then
+            localDb.remove(dbKey)
+            staleCount = staleCount + 1
+        end if
+    end for
+    
+    if staleCount > 0 then
+        print("<color=orange>Purged " + staleCount + " out-of-range networks from the database.</color>")
+        self.pushDatabase(localDb)
+    end if
+    
+    floorLvl = 90
+    if cmdArgs.len > 1 then floorLvl = cmdArgs[1].to_int
+    
+    for currentFloor in range(floorLvl, 0, -10)
+        for netString in visibleNets
+            blocks = netString.split(" ")
+            sigStr = blocks[1].split("%")[0].to_int
+            
+            if sigStr < currentFloor then continue
+            
+            addrMac = blocks[0]
+            labelId = blocks[2]
+            
+            if localDb.hasIndex(labelId) then continue
+            
+            print("\n<color=#aaaaaa>Targeting: " + labelId + " (" + sigStr + "% Power)</color>")
+            
+            injectionLimit = round(300000 / (sigStr + 15))
+            print("Injecting packets...")
+            self.crypto.aireplay(addrMac, labelId, injectionLimit)
+            
+            dumpFile = self.hostComp.File("/home/" + active_user + "/file.cap")
+            if not dumpFile then exit("Error: file.cap capture failed.")
+            
+            crackedPw = self.crypto.aircrack(dumpFile.path)
+            dumpFile.delete
+            
+            if crackedPw == null then continue
+            print("<color=#84BD00>[NETWORK SECURED] " + labelId + " : " + crackedPw + "</color>")
+            
+            localDb[labelId] = {"id": labelId, "mac": addrMac, "pass": crackedPw, "signal": sigStr, "flag": "clean"}
+            self.pushDatabase(localDb)
+        end for
+    end for
+    
+    self.crypto.airmon("stop", self.nicDevice)
+    exit("\n<color=#84BD00>Scan complete. Terminal can be closed.</color>")
+end function
+
+WifiArsenal.runRotator = function(cmdArgs)
+    intervalMins = 5
+    if cmdArgs.len > 1 then intervalMins = cmdArgs[1].to_int
+    pauseSecs = intervalMins * 60
+    
+    pwrMin = 0
+    if cmdArgs.len > 2 then pwrMin = cmdArgs[2].to_int
+    
+    while true
+        localDb = self.pullDatabase()
+        freshPool = self.filterUsable(localDb)
+        
+        if freshPool.len == 0 then exit("Error: No clean networks available to rotate.")
+        
+        freshPool.shuffle()
+        print("<color=#aaaaaa>Rotation list shuffled...</color>")
+        
+        for nodeObj in freshPool
+            if nodeObj.signal < pwrMin then continue
+            
+            print("<color=orange>Jumping to: " + nodeObj.id + "</color>")
+            res = self.hostComp.connect_wifi(self.nicDevice, nodeObj.mac, nodeObj.id, nodeObj.pass)
+            
+            if res != 1 then
+                print("<color=red>Connection failed. Flagging as burned: " + nodeObj.id + "</color>")
+                localDb[nodeObj.id].flag = "burned"
+                self.pushDatabase(localDb)
+            end if
+            
+            print("<color=#aaaaaa>Holding connection for " + pauseSecs + " seconds (" + intervalMins + " mins)...</color>")
+            wait(pauseSecs)
+        end for
+    end while
+end function
+
+// ==========================================
+// ENTRY POINT
+// ==========================================
+app = new WifiArsenal
+app.init()
+
+if params.len > 0 then
+    if params[0] == "-scan" then app.runScanner(params)
+    if params[0] == "-rotate" then app.runRotator(params)
+    exit("Unknown flag.")
+else
+    app.interactiveLoop()
+end if
