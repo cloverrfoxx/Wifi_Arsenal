@@ -17,27 +17,27 @@ You can of course still manually connect to any wifi network, and you can revive
 
 Features
 
-    Background Scanner: Spawns a detached terminal that passively injects packets, cracks passwords, and adds clean networks to your database while you do other things.
+- Background Scanner: Spawns a detached terminal that passively injects packets, cracks passwords, and adds clean networks to your database while you do other things.
 
-    Burn & Hop: A panic button that flags your current network as compromised and jumps to a fresh connection.
+- Burn & Hop: A panic button that flags your current network as compromised and jumps to a fresh connection.
 
-    Failsafes: Prevents you from burning your last available network so you don't accidentally lock yourself out of the internet.
+- Failsafes: Prevents you from burning your last available network so you don't accidentally lock yourself out of the internet.
 
-    Database Management: Menu to view your available and burned networks, with the option to revive burned access points. Probably shouldn't though, just saying.
+- Database Management: Menu to view your available and burned networks, with the option to revive burned access points. Probably shouldn't though, just saying.
 
-    Compact UI: Built to fit cleanly inside the default Grey Hack terminal window without breaking formatting.
+- Compact UI: Built to fit cleanly inside the default Grey Hack terminal window without breaking formatting.
 
 Main Menu
 
-    [1] Start Background Scan: Spawns a background process that scans your area, testing networks from strongest signal to weakest. It auto-cracks them and updates your database. You can safely minimize this terminal while it runs.
+-    [1] Start Background Scan: Spawns a background process that scans your area, testing networks from strongest signal to weakest. It auto-cracks them and updates your database. You can safely minimize this terminal while it runs.
 
-    [2] Burn & Hop: If you think you've been spotted, hit 2 and press Enter. It will identify your current router, mark it as BURNED, and jump to the next clean network. You can also specify an ID to burn a different network.
+-    [2] Burn & Hop: If you think you've been spotted, hit 2 and press Enter. It will identify your current router, mark it as BURNED, and jump to the next clean network. You can also specify an ID to burn a different network.
 
-    [3] List Arsenal: Check your available and burned networks. You can revive specific networks by ID or revive all of them, though you'll get an OPSEC warning first.
+-    [3] List Arsenal: Check your available and burned networks. You can revive specific networks by ID or revive all of them, though you'll get an OPSEC warning first.
 
-    [4] Auto-Rotate: Launches the legacy timed rotation loop. Warning: Using this without burning networks defeats the stealth purpose of the tool.
+-    [4] Auto-Rotate: Launches the legacy timed rotation loop. Warning: Using this without burning networks defeats the stealth purpose of the tool.
 
-    [5] Exit: Closes the script.
+-    [5] Exit: Closes the script.
 
 Background Arguments
 
