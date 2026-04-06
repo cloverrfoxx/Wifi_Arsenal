@@ -49,5 +49,5 @@ You probably won't need to run these manually since the menu handles it, but the
 
 Configuration
 
-The script saves your database to your home directory by default (~/.wifinetworks.txt). If you want to change where the file lives, just open the source code and edit the STORAGE_PATH variable near the top.
-Remove the '.' before the name (~/wifinetworks.txt) if you want to see it in FileExplorer.exe. I've hidden it by default to reduce visual clutter.
+The script saves your database to your home directory by default (/.wifinetworks.txt). If you want to change where the file lives, just open the source code and edit the STORAGE_PATH variable near the top.
+Remove the '.' before the name (/wifinetworks.txt) if you want to see it in FileExplorer.exe. I've hidden it by default to reduce visual clutter.
