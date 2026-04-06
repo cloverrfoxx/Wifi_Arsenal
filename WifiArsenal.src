@@ -427,7 +427,7 @@ WifiArsenal.runScanner = function(cmdArgs)
             print("Injecting packets...")
             self.crypto.aireplay(addrMac, labelId, injectionLimit)
             
-            dumpFile = self.hostComp.File("/home/" + active_user + "/file.cap")
+            dumpFile = self.hostComp.File( home_dir + "/file.cap")
             if not dumpFile then exit("Error: file.cap capture failed.")
             
             crackedPw = self.crypto.aircrack(dumpFile.path)
